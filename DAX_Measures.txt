@@ -1,0 +1,193 @@
+AVNEESH REALTY GROUP — DAX MEASURES
+Amounts in the source data are in ₹ Lakh throughout — that's why formulas divide by 100 to show Cr.
+
+================================================================
+HOME TABLE: Fact_Booking
+================================================================
+
+Net Bookings Value =
+CALCULATE(
+    SUM ( Fact_Booking[BookingValueLakh] ),
+    Fact_Booking[Status] <> "Cancelled"
+)
+
+Bookings YTD =
+TOTALYTD ( [Net Bookings Value], Dim_Date[Date], "3/31" )
+
+Booking Target YTD =
+CALCULATE(
+    SUM ( Target_Bookings[TargetValueLakh] ),
+    FILTER (
+        ALL ( Target_Bookings ),
+        Target_Bookings[MonthEnd] <= MAX ( Dim_Date[Date] )
+            && Target_Bookings[FY] = SELECTEDVALUE ( Dim_Date[FY] )
+    )
+)
+-- Note: Target_Bookings is NOT related to Dim_Date in the model.
+-- Targets are set at month-end/project grain; a relationship would force a
+-- fake daily allocation. Filtering with FILTER(ALL(...)) keeps it honest.
+
+Target Achievement % =
+DIVIDE ( [Bookings YTD], [Booking Target YTD] )
+
+Price Realisation % =
+DIVIDE (
+    [Net Bookings Value],
+    CALCULATE ( SUM ( Fact_Booking[ListPriceLakh] ), Fact_Booking[Status] <> "Cancelled" )
+)
+
+Avg Days on Market =
+AVERAGEX (
+    FILTER ( Fact_Booking, Fact_Booking[Status] <> "Cancelled" ),
+    DATEDIFF ( RELATED ( Dim_Unit[ReleaseDate] ), Fact_Booking[BookingDate], DAY )
+)
+
+Bookings Count =
+CALCULATE ( COUNTROWS ( Fact_Booking ), Fact_Booking[Status] <> "Cancelled" )
+
+================================================================
+HOME TABLE: Dim_Unit
+================================================================
+
+Unsold Inventory % =
+VAR TotalUnits = COUNTROWS ( Dim_Unit )
+VAR AvailableUnits =
+    CALCULATE ( COUNTROWS ( Dim_Unit ), Dim_Unit[Status] = "Available" )
+RETURN
+    DIVIDE ( AvailableUnits, TotalUnits )
+
+Available Units =
+CALCULATE ( COUNTROWS ( Dim_Unit ), Dim_Unit[Status] = "Available" )
+
+================================================================
+HOME TABLE: Fact_Lead
+================================================================
+
+Total Leads = COUNTROWS ( Fact_Lead )
+
+Site Visits =
+CALCULATE (
+    COUNTROWS ( Fact_Lead ),
+    Fact_Lead[FurthestStage] IN { "Site Visit", "Negotiation", "Booked" }
+)
+
+Lead to Visit % = DIVIDE ( [Site Visits], [Total Leads] )
+
+Site Visit Conversion % = DIVIDE ( [Bookings Count], [Site Visits] )
+
+Marketing Spend = SUM ( Fact_Lead[AllocatedMarketingCostLakh] )
+
+Cost per Booking = DIVIDE ( [Marketing Spend], [Bookings Count] )
+
+Bookings per Active Agent =
+VAR ActiveAgents =
+    CALCULATE ( DISTINCTCOUNT ( Fact_Booking[AgentID] ), Fact_Booking[Status] <> "Cancelled" )
+RETURN
+    DIVIDE ( [Bookings Count], ActiveAgents )
+
+================================================================
+HOME TABLE: Fact_Collection
+================================================================
+
+Total Demand = SUM ( Fact_Collection[DemandAmtLakh] )
+
+Total Received = SUM ( Fact_Collection[ReceivedAmtLakh] )
+
+Collection Efficiency % = DIVIDE ( [Total Received], [Total Demand] )
+
+Overdue Amount =
+SUMX (
+    Fact_Collection,
+    Fact_Collection[DemandAmtLakh] - Fact_Collection[ReceivedAmtLakh]
+)
+
+Overdue 90+ =
+CALCULATE (
+    [Overdue Amount],
+    FILTER (
+        Fact_Collection,
+        Fact_Collection[ReceivedAmtLakh] < Fact_Collection[DemandAmtLakh]
+            && DATEDIFF ( Fact_Collection[DueDate], TODAY(), DAY ) > 90
+    )
+)
+
+Days Sales Outstanding =
+AVERAGEX (
+    FILTER ( Fact_Collection, NOT ISBLANK ( Fact_Collection[ReceivedDate] ) ),
+    DATEDIFF ( Fact_Collection[DueDate], Fact_Collection[ReceivedDate], DAY )
+)
+
+================================================================
+HOME TABLE: Fact_VendorSpend
+================================================================
+
+Actual Spend = SUM ( Fact_VendorSpend[InvoiceAmtLakh] )
+
+Budget Amount = SUM ( Fact_VendorSpend[BudgetAmtLakh] )
+
+Cost Variance % = DIVIDE ( [Actual Spend] - [Budget Amount], [Budget Amount] )
+
+Cost Variance Status =
+SWITCH (
+    TRUE (),
+    ISBLANK ( [Cost Variance %] ), "No spend",
+    [Cost Variance %] > 0.05, "Over budget",
+    [Cost Variance %] < -0.05, "Under budget",
+    "On track"
+)
+
+Vendor Rank =
+RANKX ( ALLSELECTED ( Dim_Vendor[VendorName] ), [Actual Spend], , DESC )
+
+Cumulative Spend % =
+VAR CurrentRank = [Vendor Rank]
+VAR RunningTotal =
+    SUMX (
+        FILTER ( ALLSELECTED ( Dim_Vendor[VendorName] ), [Vendor Rank] <= CurrentRank ),
+        [Actual Spend]
+    )
+RETURN
+    DIVIDE ( RunningTotal, CALCULATE ( [Actual Spend], ALLSELECTED ( Dim_Vendor ) ) )
+
+Vendor On-Time Delivery % =
+DIVIDE (
+    CALCULATE (
+        COUNTROWS ( Fact_VendorSpend ),
+        Fact_VendorSpend[ActualDeliveryDate] <= Fact_VendorSpend[PromisedDeliveryDate]
+    ),
+    COUNTROWS ( Fact_VendorSpend )
+)
+
+PO to Invoice Cycle Days =
+AVERAGEX ( Fact_VendorSpend, DATEDIFF ( Fact_VendorSpend[PODate], Fact_VendorSpend[InvoiceDate], DAY ) )
+
+================================================================
+HOME TABLE: Fact_Milestone
+================================================================
+
+Milestones Completed =
+CALCULATE ( COUNTROWS ( Fact_Milestone ), Fact_Milestone[Status] = "Complete" )
+
+Milestones On Time % =
+VAR CompletedMS =
+    FILTER ( Fact_Milestone, Fact_Milestone[Status] = "Complete" )
+VAR OnTimeMS =
+    FILTER ( CompletedMS, Fact_Milestone[ActualDate] <= Fact_Milestone[PlannedDate] )
+RETURN
+    DIVIDE ( COUNTROWS ( OnTimeMS ), COUNTROWS ( CompletedMS ) )
+
+================================================================
+DISPLAY / FORMATTING MEASURES (optional convenience)
+================================================================
+
+Net Bookings Value (Cr) = DIVIDE ( [Net Bookings Value], 100 )
+-- Format as currency, 1-2 decimals, and set the visual's field label to "₹ Cr"
+
+Variance Colour =
+SWITCH (
+    [Cost Variance Status],
+    "Over budget", "#A2183D",
+    "Under budget", "#8A6410",
+    "#145E59"
+)
+-- Use in a conditional formatting rule (Format by field value) on variance visuals.
